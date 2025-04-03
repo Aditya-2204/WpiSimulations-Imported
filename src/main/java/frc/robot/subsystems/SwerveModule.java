@@ -1,172 +1,64 @@
-// Copyright (c) FIRST and other WPILib contributors.
-// Open Source Software; you can modify and/or share it under the terms of
-// the WPILib BSD license file in the root directory of this project.
-
 package frc.robot.subsystems;
 
-import com.ctre.phoenix6.hardware.CANcoder;
-
-import com.revrobotics.RelativeEncoder;
+import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.SparkLowLevel.MotorType;
-import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
-import com.revrobotics.spark.config.SparkMaxConfig;
-import com.revrobotics.spark.SparkBase.PersistMode;
-import com.revrobotics.spark.SparkBase.ResetMode;
-
-import edu.wpi.first.math.controller.PIDController;
-import edu.wpi.first.math.geometry.Rotation2d;
-import edu.wpi.first.math.kinematics.SwerveModulePosition;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
-import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
-import edu.wpi.first.wpilibj2.command.SubsystemBase;
-import frc.robot.lib.drivers.VikingSparkMax;
-import frc.robot.Constants.SwerveConstants;
+import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.networktables.NetworkTable;
-import edu.wpi.first.networktables.NetworkTableInstance;
 
+public class SwerveModule {
+  // Define the maximum velocity for scaling (in meters per second).
+  public static final double MAX_VELOCITY = 5.0;
 
-public class SwerveModule extends SubsystemBase {
-  private VikingSparkMax driveMotor;
-  private VikingSparkMax turnMotor;
+  private final String name;
+  private final SparkMax driveMotor;
+  private final SparkMax turningMotor;
+  private SwerveModuleState currentState;
 
-  private RelativeEncoder driveEncoder;
-  private RelativeEncoder turnEncoder;
-
-  private PIDController turnPIDController;
-  private CANcoder absoluteEncoder;
-
-  private boolean absoluteEncoderReversed;
-  private double absoluteEncoderOffset;
-
-  private int driveID = 0;
-  private int turnID = 0;
-
-  private Rotation2d lastAngle;
-
-    // Create a NetworkTable instance
-    private final NetworkTableInstance ntInstance = NetworkTableInstance.getDefault();
-    private final NetworkTable table = ntInstance.getTable("SwerveModule");
-
-
-  /** Creates a new SwerveModule. */
-  public SwerveModule(int driveMotorId, int turnMotorId, boolean driveMotorReversed, boolean turnMotorReversed,
-    int absoluteEncoderId, double absoluteEncoderOffset, boolean absoluteEncoderReversed) {
-
-      this.absoluteEncoderOffset = absoluteEncoderOffset;
-      this.absoluteEncoderReversed = absoluteEncoderReversed;
-
-      driveID = driveMotorId;
-      absoluteEncoder = new CANcoder(absoluteEncoderId);
-
-      turnID = turnMotorId;
-
-      driveMotor = new VikingSparkMax(driveMotorId, MotorType.kBrushless, IdleMode.kCoast, 45, driveMotorReversed);
-      turnMotor = new VikingSparkMax(turnMotorId, MotorType.kBrushless, IdleMode.kCoast, 25, turnMotorReversed);
-
-      driveEncoder = driveMotor.getEncoder();
-      turnEncoder = turnMotor.getEncoder();
-
-      turnPIDController = new PIDController(SwerveConstants.KP_TURNING, 0, 0);
-      turnPIDController.enableContinuousInput(-Math.PI, Math.PI);
-
-      resetEncoders();
-      lastAngle = getState().angle;
+  public SwerveModule(String name, int driveMotorID, int turningMotorID) {
+    this.name = name;
+    driveMotor = new SparkMax(driveMotorID, MotorType.kBrushless);
+    turningMotor = new SparkMax(turningMotorID, MotorType.kBrushless);
+    // Initialize state to zero.
+    currentState = new SwerveModuleState(0.0, new Rotation2d(0.0));
   }
 
-  @Override
-  public void periodic() {
-      // Existing SmartDashboard logging
-      SmartDashboard.putNumber("Drive Distance (rot) - Motor: " + driveID, getDriveMotorPosition());
-      SmartDashboard.putNumber("Wheel Position (rot) - Motor: " + turnID, getTurnMotorPosition());
-      SmartDashboard.putNumber("Absolute Wheel Angle (deg) - Motor: " + driveID, absoluteEncoder.getAbsolutePosition().getValueAsDouble());
-      SmartDashboard.putNumber("Vels - Motor: " + driveID, getDriveMotorVelocity());
-  }
-  
+  /**
+   * Sets the desired state using real swerve kinematics.
+   * In a full implementation, you’d incorporate PID control for both drive and turning.
+   *
+   * @param state The desired SwerveModuleState from kinematics.
+   */
+  public void setDesiredState(SwerveModuleState state) {
+    // Optimize the module state to reduce unnecessary rotation.
+    currentState = SwerveModuleState.optimize(state, new Rotation2d(getCurrentAngleRadians()));
 
-  public void setBrake(boolean brake){
-    if(brake){
-      SparkMaxConfig config = new SparkMaxConfig();
-      config
-          .idleMode(IdleMode.kBrake);
-      driveMotor.configure(config, ResetMode.kResetSafeParameters, PersistMode.kPersistParameters);
-      
-      SparkMaxConfig config1 = new SparkMaxConfig();
-      config1
-          .idleMode(IdleMode.kCoast);
-      turnMotor.configure(config1, ResetMode.kResetSafeParameters, PersistMode.kPersistParameters);
-    }
-    else{
-      SparkMaxConfig config = new SparkMaxConfig();
-      config
-          .idleMode(IdleMode.kCoast);
-      driveMotor.configure(config, ResetMode.kResetSafeParameters, PersistMode.kPersistParameters);
-      SparkMaxConfig config1 = new SparkMaxConfig();
-      config1
-          .idleMode(IdleMode.kCoast);
-      turnMotor.configure(config1, ResetMode.kResetSafeParameters, PersistMode.kPersistParameters);
-    }
-  }
-  
-  public double getDriveMotorPosition(){
-    return driveEncoder.getPosition() * SwerveConstants.DRIVE_MOTOR_PCONVERSION;
+    // Calculate drive motor output (scaled to -1 to 1 based on MAX_VELOCITY).
+    double driveOutput = currentState.speedMetersPerSecond / MAX_VELOCITY;
+    driveMotor.set(driveOutput);
+
+    // For the turning motor, convert the desired angle to degrees.
+    double targetAngleDegrees = currentState.angle.getDegrees();
+    // In a complete implementation, use a PID controller to reach targetAngleDegrees.
+    // Here we simply set the turning motor’s encoder position.
+    turningMotor.getEncoder().setPosition(targetAngleDegrees);
   }
 
-  public double getDriveMotorVelocity(){
-    return driveEncoder.getVelocity() * SwerveConstants.DRIVE_MOTOR_VCONVERSION;
+  /**
+   * Retrieves the current angle of the module in radians.
+   * This dummy conversion assumes the turning encoder outputs degrees.
+   */
+  private double getCurrentAngleRadians() {
+    return Math.toRadians(turningMotor.getEncoder().getPosition());
   }
 
-  public double getTurnMotorPosition(){
-    return turnEncoder.getPosition() * SwerveConstants.TURN_MOTOR_PCONVERSION;
-  }
-
-  public double getTurnMotorVelocity(){
-    return turnEncoder.getVelocity() * SwerveConstants.TURN_MOTOR_VCONVERSION;
-  }
-
-  public double getAbsoluteEncoderAngle(){
-    double angle = absoluteEncoder.getAbsolutePosition().getValueAsDouble();
-    angle -= absoluteEncoderOffset;
-    angle *= (2 * Math.PI);
-    return angle * (absoluteEncoderReversed ? -1.0 : 1.0);
-  }
-
-  public void resetEncoders(){
-    driveEncoder.setPosition(0);
-    turnEncoder.setPosition(getAbsoluteEncoderAngle() / SwerveConstants.TURN_MOTOR_PCONVERSION);
-  }
-
-  public SwerveModuleState getState(){
-    return new SwerveModuleState(getDriveMotorVelocity(), new Rotation2d(getTurnMotorPosition()));
-  }
-
-  public SwerveModulePosition getPosition(){
-    return new SwerveModulePosition(getDriveMotorPosition(), new Rotation2d(getTurnMotorPosition()));
-  }
-
-  public void setDesiredState(SwerveModuleState desiredState){
-    // desiredState = SwerveModuleState.optimize(desiredState, getState().angle); 
-    desiredState.optimize(getState().angle);
-    
-    setAngle(desiredState);
-    setSpeed(desiredState);
-    SmartDashboard.putString("Swerve [" + driveMotor.getDeviceId() + "] State", getState().toString());
-    SmartDashboard.putNumber("Abs Angle " + driveMotor.getDeviceId(), getAbsoluteEncoderAngle());
-
-  }
-
-  public void setSpeed(SwerveModuleState desiredState){
-    driveMotor.set(desiredState.speedMetersPerSecond / SwerveConstants.DRIVETRAIN_MAX_SPEED);
-  }
-
-  public void setAngle(SwerveModuleState desiredState){
-    Rotation2d angle = (Math.abs(desiredState.speedMetersPerSecond) <= (SwerveConstants.DRIVETRAIN_MAX_SPEED * 0.01)) ? lastAngle : desiredState.angle; //Prevent rotating module if speed is less then 1%. Prevents Jittering.
-    
-    turnMotor.set(turnPIDController.calculate(getTurnMotorPosition(), desiredState.angle.getRadians()));
-    lastAngle = angle;
-  }
-
-  public void stop(){
-    driveMotor.set(0);
-    turnMotor.set(0);
+  /**
+   * Reports the module’s current angle (in degrees) and velocity (m/s) to NetworkTables.
+   *
+   * @param table The NetworkTable where the values will be published.
+   */
+  public void updateNetworkTable(NetworkTable table) {
+    table.getEntry(name + "/angle").setDouble(currentState.angle.getDegrees()*180);
+    table.getEntry(name + "/velocity").setDouble(currentState.speedMetersPerSecond);
   }
 }
